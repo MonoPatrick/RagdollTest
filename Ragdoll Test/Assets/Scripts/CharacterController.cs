@@ -1,116 +1,105 @@
 using System.Collections;
 using System.Collections.Generic;
-using Unity.Mathematics;
-using Unity.VisualScripting;
 using UnityEngine;
+using Cinemachine;
 
 public class CharacterController : MonoBehaviour
 {
-    [SerializeField]
-    private Rigidbody rb;
+    [SerializeField] private Rigidbody rb;
+    [SerializeField] private ConfigurableJoint mainJoint;
+    [SerializeField] private Animator animator;
+    [SerializeField] private Transform sphereCenterTransform; // The sphere center
 
-    [SerializeField]
-    private ConfigurableJoint mainJoint;
-
-    [SerializeField]
-    Animator animator;
-
-    //input
     private Vector2 moveInputVector = Vector2.zero;
     private bool isJumping = false;
 
-    //controller settings
-    private float maxSpeed = 3f;
+    private float maxSpeed = 5f;
+    private float movementForce = 50f;
+    private float rotationSpeed = 5f; // Smooth turning
+    private float jumpForce = 10f;
+    private float gravityForce = 15f;
 
-    //states
     private bool isGrounded = false;
-
-    private bool isRagdoll = false;
-
-    //raycasts
     private RaycastHit[] raycastHits = new RaycastHit[10];
-
-    //syncing physic objects
-    SyncPhysicsObject[] syncPhysicsObjects;
+    private SyncPhysicsObject[] syncPhysicsObjects;
 
     void Awake()
     {
         syncPhysicsObjects = GetComponentsInChildren<SyncPhysicsObject>();
     }
 
-    // Update is called once per frame
     void Update()
     {
-        moveInputVector.x = Input.GetAxis("Horizontal");
-        moveInputVector.y = Input.GetAxis("Vertical");
+        moveInputVector.x = Input.GetAxis("Horizontal"); // A/D or Left/Right
+        moveInputVector.y = Input.GetAxis("Vertical");   // W/S or Up/Down
 
-        if(Input.GetKey(KeyCode.Space))
+        if (Input.GetKey(KeyCode.Space))
         {
             isJumping = true;
         }
-
     }
 
     private void FixedUpdate()
     {
-        //assume not grounded
         isGrounded = false;
 
-        //check if grounded
-        int numberOfHits = Physics.SphereCastNonAlloc(rb.position, 0.1f, transform.up * -1, raycastHits, 0.5f);
-
+        // SphereCast to check if grounded
+        int numberOfHits = Physics.SphereCastNonAlloc(rb.position, 0.2f, -transform.up, raycastHits, 0.5f);
         for (int i = 0; i < numberOfHits; i++)
         {
-
-            //if hit self just continue and ignore it (continue just skips an iteration)
-            if (raycastHits[i].transform.root == transform)
-            {
-                continue;
-            }
-
+            if (raycastHits[i].transform.root == transform) continue;
             isGrounded = true;
             break;
         }
 
-        //if in air add force downwards to counteract floaty feel unity gives
-        if(!isGrounded)
+        // Get Camera Direction
+        Transform cameraTransform = Camera.main.transform;
+        Vector3 cameraForward = cameraTransform.forward;
+        Vector3 cameraRight = cameraTransform.right;
+
+        //Find Character's Upward Normal (relative to sphere)
+        Vector3 sphereCenter = sphereCenterTransform.position;
+        Vector3 characterToCenter = (rb.position - sphereCenter).normalized;
+
+        //Project camera direction onto the sphere's surface
+        cameraForward = Vector3.ProjectOnPlane(cameraForward, characterToCenter).normalized;
+        cameraRight = Vector3.ProjectOnPlane(cameraRight, characterToCenter).normalized;
+
+        // Get Movement Direction Based on Camera
+        Vector3 moveDirection = (cameraRight * moveInputVector.x + cameraForward * moveInputVector.y).normalized;
+
+        if (moveDirection.magnitude > 0.1f)
         {
-            rb.AddForce(Vector3.down * 10);
-        }
+            // Keep movement aligned to the sphere surface
+            moveDirection = Vector3.ProjectOnPlane(moveDirection, characterToCenter).normalized;
 
-        Vector3 localVelocityVsForward = transform.forward * Vector3.Dot(transform.forward, rb.velocity);
+            // Correctly Rotate Character to Face Movement
+            Quaternion targetRotation = Quaternion.LookRotation(moveDirection, characterToCenter);
+            mainJoint.targetRotation = Quaternion.Inverse(targetRotation); // Assigning correct ragdoll rotation
 
-        float localForwardVelocity = localVelocityVsForward.magnitude;
-
-        float inputMagnatude = moveInputVector.magnitude;
-
-        if(inputMagnatude != 0)
-        {
-            Quaternion desiredDirection = Quaternion.LookRotation(new Vector3(moveInputVector.x, 0, moveInputVector.y * -1), transform.up);
-
-            mainJoint.targetRotation = Quaternion.RotateTowards(mainJoint.targetRotation, desiredDirection, Time.fixedDeltaTime * 300);
-
-           
-
-            if(localForwardVelocity < maxSpeed)
+            // Apply movement force
+            if (rb.velocity.magnitude < maxSpeed)
             {
-                rb.AddForce(transform.forward * inputMagnatude * 30);
+                rb.AddForce(moveDirection * movementForce);
             }
         }
 
-        if(isGrounded && isJumping)
+        if (!isGrounded)
         {
-            rb.AddForce(Vector3.up*10, ForceMode.Impulse);
+            rb.AddForce(characterToCenter * -gravityForce);
+        }
 
+        if (isGrounded && isJumping)
+        {
+            rb.AddForce(characterToCenter * jumpForce, ForceMode.Impulse);
             isJumping = false;
         }
 
-        animator.SetFloat("movementSpeed", localForwardVelocity* 0.4f);//this controls how fast the legs move
+        animator.SetFloat("movementSpeed", rb.velocity.magnitude * 0.4f);
 
-        //update joints based on animation
-        for (int i = 0; i < syncPhysicsObjects.Length; i++)
+        foreach (var obj in syncPhysicsObjects)
         {
-            syncPhysicsObjects[i].UpdateJointFromAnimation();
+            obj.UpdateJointFromAnimation();
         }
     }
 }
